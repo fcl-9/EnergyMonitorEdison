@@ -4,6 +4,7 @@
 
 //Setup express 
 var express = require('express');
+var http = require('http');
 var app = express();
 app.use(express.static(__dirname));
 //Listen on port 1337
@@ -57,9 +58,10 @@ var MainsVoltage = settingsValues.MainsVoltage;
 //Gets previous relayState value from settings file
 var relayState = settingsValues.relayState;
 //console.log(MainsVoltage);
-//console.log(relayState);
+console.log(relayState);
 
 //Turns relay on/off according to relayState value at beginning 
+
 Relay.write(relayState?1:0);
 
 //100mV/A sensibility with ASC712-20 but since i'm using sparkfunADC block the max voltage is 3.3 V
@@ -123,15 +125,48 @@ io.sockets.on('connection', function (socket) {
     
     //Runs this function every 2 seconds
     setInterval(function () {   
-        
-        //Sends the power and current consumed to the client
-        socket.emit( 'power' , JSON.stringify(getPower())); 
-        //Updates the value of the !relayState on all clients 
-        io.emit('control_relay', {value: !relayState});
-        //Updates the value of the MainsVoltage selected on all clients 
-        io.emit('updateVoltageOption', MainsVoltage);
-        
-        //jsonfile.writeFileSync(settingsJSON, {"MainsVoltage":MainsVoltage, "relayState":relayState});       
+        console.log('state '+relayState);
+        if (!relayState) {
+            //Sends the power and current consumed to the client
+            socket.emit( 'power' , JSON.stringify({'power':0,'current':0}));
+            stateled='green';
+        }else{
+            //Sends the power and current consumed to the client
+            socket.emit( 'power' , JSON.stringify(getPower()));
+            console.log(getPower());
+            console.log('power '+getPower().power);
+            var postData = {
+                power: getPower().power,
+                timestamp: Date.now()
+            };
+
+            var options = {
+                auth: 'miti_plugs-bd8bf7a544cac5b65cd74f11cbeff8827b23e920bb98218:ffc16a0f2d1f35e4537a91d9651320c5b1c7783f36f39a13',
+                host: '192.168.10.171',
+                port: '3000',
+                path: '/api/json/plugs',
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            };
+            var post_req = http.request(options, function(res) {
+                res.setEncoding('utf8');
+            });
+            post_req.on('error', function(err) {
+                //console.log("Cannot connecto to server.");
+                //console.log(err);
+            })
+            post_req.write(JSON.stringify(postData));
+            post_req.end();
+
+            //Updates the value of the !relayState on all clients 
+            io.emit('control_relay', {value: !relayState});
+            //Updates the value of the MainsVoltage selected on all clients 
+            io.emit('updateVoltageOption', MainsVoltage);
+
+            //jsonfile.writeFileSync(settingsJSON, {"MainsVoltage":MainsVoltage, "relayState":relayState});
+        }
     }, 2000);  
     
     //Listens for a msg sent from client with keyword 'control_relay'.  
@@ -166,7 +201,6 @@ io.sockets.on('connection', function (socket) {
         adcZero = determineADCzero();
         socket.emit('calibration_response');
     });
-
 });
 
 //This function is called every 100 ms to change the LED's colours
@@ -266,7 +300,7 @@ setInterval(function () {
 
 //Checks if physical button to control the relay was pressed every 300 ms
 setInterval(function() {
-    button = relay_button.read();    
+    button = relay_button.read();
     if(button != last_state){        
        if(button === 1){
             relayState = !relayState;
@@ -283,19 +317,29 @@ function getPower() {
     var readValue = 0;    
     var countSamples = 0;
     var startTime = Date.now()-sampleInterval; 
+    var storeSamples = [];
+    //console.log('Date before while: ' + Date.now());
+    
     
     while(countSamples < samples){
-      //To give some time before reading again    
+      //To give some time before reading again
       if((Date.now()-startTime) >= sampleInterval){
         //Centers read value at zero
-        readValue = a0_4v.adcRead() - adcZero; 
+        readValue = a0_4v.adcRead() - adcZero;
+        storeSamples.push(readValue);
         //Squares all values and sums them  
         result += (readValue * readValue);       
         countSamples++;
         startTime += sampleInterval;
       }
     }
-    
+    //console.log(storeSamples);
+    var sum = 0
+    for (var i = 0; i < storeSamples.length; i++) {
+        sum += storeSamples[i];
+    }
+    //console.log(sum/storeSamples.length);
+    //console.log('Date after while: ' + Date.now());
     //Calculates RMS current. 3300 = 3.3V/mV. 1650 is the max ADC count i can get with 3.3V
     AmpRMS = (Math.sqrt(result/countSamples))*3300/(sensibility*1650);
     
