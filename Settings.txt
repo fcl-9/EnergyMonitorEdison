@@ -1,2 +1,0 @@
-MainsVoltage=240&
-RelayState=true&
