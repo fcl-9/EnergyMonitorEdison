@@ -80,6 +80,8 @@ var sampleTime = 0.1;
 var samples = 500;
 var sampleInterval = sampleTime/samples;
 
+var treshold = 30;
+
 //If using edison kit use these
 /*var pwmRed = new mraa.Pwm(3);//red
 var pwmGreen = new mraa.Pwm(5);//green
@@ -116,6 +118,10 @@ led_plug_ON_OFF.write(relayState?1:0);
 var last_state = 0;
 var button = 0;
 
+var storePowerSamples = [-1,-2];
+var storeMedianPower = null;
+var median = require('median');
+
 //If a new client connects runs the callback function
 io.sockets.on('connection', function (socket) {
     //Sends the value of the !relayState to all clients on connect
@@ -133,7 +139,28 @@ io.sockets.on('connection', function (socket) {
         }else{
             //Sends the power and current consumed to the client
             socket.emit( 'power' , JSON.stringify(getPower()));
-            console.log(getPower());
+            storePowerSamples.push(getPower().power);
+            console.log(storePowerSamples);
+            if (storePowerSamples.length >= 3)
+            {
+                if(storeMedianPower == null){
+                    storeMedianPower = median(storePowerSamples);   
+                }else{
+                    if( Math.abs(storeMedianPower - median(storePowerSamples)) >= treshold ){
+                        console.log("An Event was detected");
+                    }else{
+                        console.log("No Event Detected");
+                    }
+                    storeMedianPower = median(storePowerSamples);
+                }
+                //console.log('remove primeiro');
+                console.log(storePowerSamples.shift());
+
+                //console.log('depois de remover')
+                //console.log(storePowerSamples);
+            }
+
+            console.log(getPower(getPower().power));
             console.log('power '+getPower().power);
             var postData = {
                 power: getPower().power,
