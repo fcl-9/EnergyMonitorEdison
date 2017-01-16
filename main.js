@@ -143,7 +143,7 @@ io.sockets.on('connection', function (socket) {
     io.emit('updateVoltageOption', MainsVoltage);
 
     //Runs this function every 2 seconds
-    setInterval(function () {   
+    setInterval(function () {
         console.log('state '+relayState);
         if (!relayState) {
             //Sends the power and current consumed to the client
@@ -161,16 +161,47 @@ io.sockets.on('connection', function (socket) {
                     storeMedianPower = median(storePowerSamples);   //Median Calculation
                 }else{
                     var medianDiference =  storeMedianPower - median(storePowerSamples);
+                    var stateValue = undefined;
                     if( Math.abs(medianDiference) >= treshold ){
                         console.log("###### An Event was detected ######");
                         //Positive Edge Trigger
                         if(medianDiference < 0){
                             console.log("Turned a new device on");
+                            stateValue = "ON";
                         }
                         //Negative Edge Trigger
                         else if(medianDiference >= 0){
                             console.log("Turned a device off");
+                            stateValue = "OFF";
                         }
+
+                        var postData = {
+                            type: stateValue,
+                            timestamp: Date.now()
+                        };
+
+                        var options = {
+                            auth: databaseAuthUrl,
+                            host: databaseHostIp,
+                            port: databasePort,
+                            path: '/api/json/plugs_events',
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            }
+                        };
+                        var post_req = http.request(options, function(res) {
+                            res.setEncoding('utf8');
+                        });
+                        post_req.on('error', function(err) {
+                            console.log("Cannot connect to server.");
+                            console.log(err);
+                        })
+                        post_req.write(JSON.stringify(postData));
+                        post_req.end();
+                        console.log("Sending Event Values");
+
+
                     }else{
                         console.log("No Event Detected");   //No event Detection
                     }
@@ -185,9 +216,10 @@ io.sockets.on('connection', function (socket) {
             }
 
             //TODO: refactor this part
-            if(getPower().power > 0){ //Ignore Values Zero
+            if(getPower().power > 0 || getPower.current > 0){ //Ignore Values Zero
                 var postData = {
                     power: getPower().power,
+                    current: getPower().current,
                     timestamp: Date.now()
                 };
 
@@ -195,7 +227,7 @@ io.sockets.on('connection', function (socket) {
                     auth: databaseAuthUrl,
                     host: databaseHostIp,
                     port: databasePort,
-                    path: '/api/json/plugs',
+                    path: '/api/json/plugs_measures_after_before_events',
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -205,26 +237,26 @@ io.sockets.on('connection', function (socket) {
                     res.setEncoding('utf8');
                 });
                 post_req.on('error', function(err) {
-                    //console.log("Cannot connect to server.");
-                    //console.log(err);
+                    console.log("Cannot connect to server.");
+                    console.log(err);
                 })
                 post_req.write(JSON.stringify(postData));
                 post_req.end();
-                //console.log("Sending Values");
+                console.log("Sending Values");
             }else{
                 console.log("Zero values are ignored -- Avoid Database Useless Storage");
             }
 
-            //Updates the value of the !relayState on all clients 
+            //Updates the value of the !relayState on all clients
             io.emit('control_relay', {value: !relayState});
-            //Updates the value of the MainsVoltage selected on all clients 
+            //Updates the value of the MainsVoltage selected on all clients
             io.emit('updateVoltageOption', MainsVoltage);
 
             //jsonfile.writeFileSync(settingsJSON, {"MainsVoltage":MainsVoltage, "relayState":relayState});
         }
-    }, 2000);  
-    
-    //Listens for a msg sent from client with keyword 'control_relay'.  
+    }, 500);
+
+    //Listens for a msg sent from client with keyword 'control_relay'.
     //This is called when the 'Turn on plug/Turn off plug' button is pressed
     socket.on('control_relay', function(msg) {
         msg.value = relayState;
@@ -372,7 +404,7 @@ function getPower() {
     var readValue = 0;
     var countSamples = 0;
 
-    var startTime = Date.now()-sampleInterval; 
+    var startTime = Date.now()-sampleInterval;
     var storeSamples = [];
     //console.log('Date before while: ' + Date.now());
 
@@ -382,8 +414,8 @@ function getPower() {
         //Centers read value at zero
         readValue = a0_4v.adcRead() - adcZero;
         storeSamples.push(readValue);
-        //Squares all values and sums them  
-        result += (readValue * readValue);       
+        //Squares all values and sums them
+        result += (readValue * readValue);
         countSamples++;
         startTime += sampleInterval;
       }
