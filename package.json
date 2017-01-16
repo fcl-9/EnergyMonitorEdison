@@ -1,11 +1,30 @@
 {
-  "name": "AnalogRead",
-  "description": "",
-  "version": "0.0.0",
+  "name": "plug",
+  "description": "Intel® XDK IoT Blank Node.js Template",
+  "version": "1.0.0",
   "main": "main.js",
   "engines": {
     "node": ">=0.10.0"
   },
+  "license": "BSD-3-Clause",
+  "private": true,
   "dependencies": {
-  }
+    "express": "^4.14.0",
+    "jsonfile": "^2.4.0",
+    "mraa": "^1.5.1",
+    "socket.io": "^1.7.2"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fcl-93/EnergyMonitorEdison.git"
+  },
+  "author": "",
+  "bugs": {
+    "url": "https://github.com/fcl-93/EnergyMonitorEdison/issues"
+  },
+  "homepage": "https://github.com/fcl-93/EnergyMonitorEdison#readme"
 }
