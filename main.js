@@ -4,6 +4,7 @@
 
 //Setup express
 var express = require('express');
+var http = require('http');
 var app = express();
 app.use(express.static(__dirname+"/public"));
 app.use(express.static(__dirname+"/views"));
@@ -58,7 +59,7 @@ var MainsVoltage = settingsValues.MainsVoltage;
 //Gets previous relayState value from settings file
 var relayState = settingsValues.relayState;
 //console.log(MainsVoltage);
-//console.log(relayState);
+console.log(relayState);
 
 //Turns relay on/off according to relayState value at beginning
 Relay.write(relayState?1:0);
@@ -78,6 +79,8 @@ var adcZero = determineADCzero();
 var sampleTime = 0.1;
 var samples = 500;
 var sampleInterval = sampleTime/samples;
+
+var treshold = 30;
 
 //If using edison kit use these
 /*var pwmRed = new mraa.Pwm(3);//red
@@ -115,6 +118,10 @@ led_plug_ON_OFF.write(relayState?1:0);
 var last_state = 0;
 var button = 0;
 
+var storePowerSamples = [-1,-2];
+var storeMedianPower = null;
+var median = require('median');
+
 //If a new client connects runs the callback function
 io.sockets.on('connection', function (socket) {
     //Sends the value of the !relayState to all clients on connect
@@ -123,19 +130,73 @@ io.sockets.on('connection', function (socket) {
     io.emit('updateVoltageOption', MainsVoltage);
 
     //Runs this function every 2 seconds
-    setInterval(function () {
+    setInterval(function () {   
+        console.log('state '+relayState);
+        if (!relayState) {
+            //Sends the power and current consumed to the client
+            socket.emit( 'power' , JSON.stringify({'power':0,'current':0}));
+            stateled='green';
+        }else{
+            //Sends the power and current consumed to the client
+            socket.emit( 'power' , JSON.stringify(getPower()));
+            storePowerSamples.push(getPower().power);
+            console.log(storePowerSamples);
+            if (storePowerSamples.length >= 3)
+            {
+                if(storeMedianPower == null){
+                    storeMedianPower = median(storePowerSamples);   
+                }else{
+                    if( Math.abs(storeMedianPower - median(storePowerSamples)) >= treshold ){
+                        console.log("An Event was detected");
+                    }else{
+                        console.log("No Event Detected");
+                    }
+                    storeMedianPower = median(storePowerSamples);
+                }
+                //console.log('remove primeiro');
+                console.log(storePowerSamples.shift());
 
-        //Sends the power and current consumed to the client
-        socket.emit( 'power' , JSON.stringify(getPower()));
-        //Updates the value of the !relayState on all clients
-        io.emit('control_relay', {value: !relayState});
-        //Updates the value of the MainsVoltage selected on all clients
-        io.emit('updateVoltageOption', MainsVoltage);
+                //console.log('depois de remover')
+                //console.log(storePowerSamples);
+            }
 
-        //jsonfile.writeFileSync(settingsJSON, {"MainsVoltage":MainsVoltage, "relayState":relayState});
-    }, 2000);
+            console.log(getPower(getPower().power));
+            console.log('power '+getPower().power);
+            var postData = {
+                power: getPower().power,
+                timestamp: Date.now()
+            };
 
-    //Listens for a msg sent from client with keyword 'control_relay'.
+            var options = {
+                auth: 'miti_plugs-bd8bf7a544cac5b65cd74f11cbeff8827b23e920bb98218:ffc16a0f2d1f35e4537a91d9651320c5b1c7783f36f39a13',
+                host: '192.168.10.171',
+                port: '3000',
+                path: '/api/json/plugs',
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            };
+            var post_req = http.request(options, function(res) {
+                res.setEncoding('utf8');
+            });
+            post_req.on('error', function(err) {
+                //console.log("Cannot connecto to server.");
+                //console.log(err);
+            })
+            post_req.write(JSON.stringify(postData));
+            post_req.end();
+
+            //Updates the value of the !relayState on all clients 
+            io.emit('control_relay', {value: !relayState});
+            //Updates the value of the MainsVoltage selected on all clients 
+            io.emit('updateVoltageOption', MainsVoltage);
+
+            //jsonfile.writeFileSync(settingsJSON, {"MainsVoltage":MainsVoltage, "relayState":relayState});
+        }
+    }, 2000);  
+    
+    //Listens for a msg sent from client with keyword 'control_relay'.  
     //This is called when the 'Turn on plug/Turn off plug' button is pressed
     socket.on('control_relay', function(msg) {
         msg.value = relayState;
@@ -167,7 +228,6 @@ io.sockets.on('connection', function (socket) {
         adcZero = determineADCzero();
         socket.emit('calibration_response');
     });
-
 });
 
 //This function is called every 100 ms to change the LED's colours
@@ -283,19 +343,31 @@ function getPower() {
     var result = 0;
     var readValue = 0;
     var countSamples = 0;
-    var startTime = Date.now()-sampleInterval;
+
+    var startTime = Date.now()-sampleInterval; 
+    var storeSamples = [];
+    //console.log('Date before while: ' + Date.now());
 
     while(countSamples < samples){
       //To give some time before reading again
       if((Date.now()-startTime) >= sampleInterval){
         //Centers read value at zero
         readValue = a0_4v.adcRead() - adcZero;
-        //Squares all values and sums them
-        result += (readValue * readValue);
+        storeSamples.push(readValue);
+        //Squares all values and sums them  
+        result += (readValue * readValue);       
         countSamples++;
         startTime += sampleInterval;
       }
     }
+
+    //console.log(storeSamples);
+    var sum = 0
+    for (var i = 0; i < storeSamples.length; i++) {
+        sum += storeSamples[i];
+    }
+    //console.log(sum/storeSamples.length);
+    //console.log('Date after while: ' + Date.now());
 
     //Calculates RMS current. 3300 = 3.3V/mV. 1650 is the max ADC count i can get with 3.3V
     AmpRMS = (Math.sqrt(result/countSamples))*3300/(sensibility*1650);
