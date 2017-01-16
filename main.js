@@ -1,8 +1,3 @@
-/*jslint node:true, vars:true, bitwise:true, unparam:true */
-/*jshint unused:true */
-
-
-//Setup express
 var express = require('express');
 var http = require('http');
 var app = express();
@@ -43,7 +38,16 @@ var jsonfile = require('jsonfile');
 //Some of the settings are saved on json file
 var settingsJSON = '/node_app_slot/Settings.json';
 var settingsBackUp = '/node_app_slot/SettingsBackup.json';
+var databaseConfigPath = "/node_app_slot/databaseConfig.json";
 var settingsValues;
+
+//Database config files loading.
+try{
+    var databaseConfig = jsonfile.readFileSync(databaseConfigPath);
+}
+catch(error){
+    console.log("Unale to read database config file." + error);
+}
 
 //Sometimes when writing to the settings file it would go blank. These lines of code will catch an error if that happens and
 //load the original default values for the MainsVoltage (230V) and relayState (true)
@@ -58,6 +62,12 @@ catch(e){
 var MainsVoltage = settingsValues.MainsVoltage;
 //Gets previous relayState value from settings file
 var relayState = settingsValues.relayState;
+
+//Assigns the read values from the config file to variables.
+var databaseHostIp = databaseConfig.databaseIp;
+var databasePort = databaseConfig.port;
+var databaseAuthUrl = databaseConfig.authUrl;
+
 //console.log(MainsVoltage);
 console.log(relayState);
 
@@ -80,7 +90,7 @@ var sampleTime = 0.1;
 var samples = 500;
 var sampleInterval = sampleTime/samples;
 
-var treshold = 30;
+var treshold = 25;
 
 //If using edison kit use these
 /*var pwmRed = new mraa.Pwm(3);//red
@@ -118,10 +128,12 @@ led_plug_ON_OFF.write(relayState?1:0);
 var last_state = 0;
 var button = 0;
 
-var storePowerSamples = [0,0];
-var copyStorePowerSamples =[0,0]
+var storePowerSamples = [0,0];    //Default Values to median calc.  -- No Data
+var copyStorePowerSamples =[0,0]; //Default Values fro Backups calc. -- No Data
+//The median is used to detect an event
 var storeMedianPower = null;
 var median = require('median');
+
 
 //If a new client connects runs the callback function
 io.sockets.on('connection', function (socket) {
@@ -142,58 +154,66 @@ io.sockets.on('connection', function (socket) {
             socket.emit( 'power' , JSON.stringify(getPower()));
             storePowerSamples.push(getPower().power);
             copyStorePowerSamples.push(getPower().power); //Backups the power sample
-            console.log("Store Samples Are " + copyStorePowerSamples);
 
             if (storePowerSamples.length >= 3)
             {
                 if(storeMedianPower == null){
-                    storeMedianPower = median(storePowerSamples);   
-
+                    storeMedianPower = median(storePowerSamples);   //Median Calculation
                 }else{
-                    if( Math.abs(storeMedianPower - median(storePowerSamples)) >= treshold ){
-                        console.log("An Event was detected");
+                    var medianDiference =  storeMedianPower - median(storePowerSamples);
+                    if( Math.abs(medianDiference) >= treshold ){
+                        console.log("###### An Event was detected ######");
+                        //Positive Edge Trigger
+                        if(medianDiference < 0){
+                            console.log("Turned a new device on");
+                        }
+                        //Negative Edge Trigger
+                        else if(medianDiference >= 0){
+                            console.log("Turned a device off");
+                        }
                     }else{
-                        console.log("No Event Detected");
+                        console.log("No Event Detected");   //No event Detection
                     }
                     storeMedianPower = median(storePowerSamples);
                 }
-                //console.log('remove primeiro');
-
+                //Copy the array
                 for(var i = 0; i < copyStorePowerSamples.length; i++){
                     storePowerSamples[i] = copyStorePowerSamples[i];
                 }
-                copyStorePowerSamples.shift(); // Remove the oldest item.
-                storePowerSamples.shift(); // Remove one of the items it doesn't matter the order.
-
+                copyStorePowerSamples.shift();  // Remove the oldest item.
+                storePowerSamples.shift();      // Remove one of the items it doesn't matter the order.
             }
 
+            //TODO: refactor this part
+            if(getPower().power > 0){ //Ignore Values Zero
+                var postData = {
+                    power: getPower().power,
+                    timestamp: Date.now()
+                };
 
-            //console.log(getPower(getPower().power));
-            //console.log('power '+getPower().power);
-            var postData = {
-                power: getPower().power,
-                timestamp: Date.now()
-            };
-
-            var options = {
-                auth: 'miti_plugs-bd8bf7a544cac5b65cd74f11cbeff8827b23e920bb98218:ffc16a0f2d1f35e4537a91d9651320c5b1c7783f36f39a13',
-                host: '192.168.10.171',
-                port: '3000',
-                path: '/api/json/plugs',
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                }
-            };
-            var post_req = http.request(options, function(res) {
-                res.setEncoding('utf8');
-            });
-            post_req.on('error', function(err) {
-                //console.log("Cannot connecto to server.");
-                //console.log(err);
-            })
-            post_req.write(JSON.stringify(postData));
-            post_req.end();
+                var options = {
+                    auth: databaseAuthUrl,
+                    host: databaseHostIp,
+                    port: databasePort,
+                    path: '/api/json/plugs',
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                };
+                var post_req = http.request(options, function(res) {
+                    res.setEncoding('utf8');
+                });
+                post_req.on('error', function(err) {
+                    //console.log("Cannot connect to server.");
+                    //console.log(err);
+                })
+                post_req.write(JSON.stringify(postData));
+                post_req.end();
+                //console.log("Sending Values");
+            }else{
+                console.log("Zero values are ignored -- Avoid Database Useless Storage");
+            }
 
             //Updates the value of the !relayState on all clients 
             io.emit('control_relay', {value: !relayState});
@@ -216,7 +236,7 @@ io.sockets.on('connection', function (socket) {
         //Turns LED on/off
         led_plug_ON_OFF.write(relayState?1:0);
         //Updates settings file with new relayState value
-        jsonfile.writeFileSync(settingsJSON, {"MainsVoltage":MainsVoltage, "relayState":relayState});
+        jsonfile.writeFileSync(settingsJSON, {"MainsVoltage":MainsVoltage, "relayState":relayState, "database_ip":databaseHostIp});
     });
 
     //Listens for a msg sent from client with keyword 'voltageOption'.
@@ -226,7 +246,7 @@ io.sockets.on('connection', function (socket) {
         //Updates the value of the MainsVoltage selected on all clients
         io.emit('updateVoltageOption', MainsVoltage);
         //Updates settings file with new MainsVoltage value
-        jsonfile.writeFileSync(settingsJSON, {"MainsVoltage":MainsVoltage, "relayState":relayState});
+        jsonfile.writeFileSync(settingsJSON, {"MainsVoltage":MainsVoltage, "relayState":relayState, "database_ip":databaseHostIp});
     });
 
     //Listens for a msg sent from client with keyword 'calibrate'.
