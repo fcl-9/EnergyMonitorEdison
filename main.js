@@ -118,7 +118,8 @@ led_plug_ON_OFF.write(relayState?1:0);
 var last_state = 0;
 var button = 0;
 
-var storePowerSamples = [-1,-2];
+var storePowerSamples = [0,0];
+var copyStorePowerSamples =[0,0]
 var storeMedianPower = null;
 var median = require('median');
 
@@ -140,11 +141,14 @@ io.sockets.on('connection', function (socket) {
             //Sends the power and current consumed to the client
             socket.emit( 'power' , JSON.stringify(getPower()));
             storePowerSamples.push(getPower().power);
-            console.log(storePowerSamples);
+            copyStorePowerSamples.push(getPower().power); //Backups the power sample
+            console.log("Store Samples Are " + copyStorePowerSamples);
+
             if (storePowerSamples.length >= 3)
             {
                 if(storeMedianPower == null){
                     storeMedianPower = median(storePowerSamples);   
+
                 }else{
                     if( Math.abs(storeMedianPower - median(storePowerSamples)) >= treshold ){
                         console.log("An Event was detected");
@@ -154,14 +158,18 @@ io.sockets.on('connection', function (socket) {
                     storeMedianPower = median(storePowerSamples);
                 }
                 //console.log('remove primeiro');
-                console.log(storePowerSamples.shift());
 
-                //console.log('depois de remover')
-                //console.log(storePowerSamples);
+                for(var i = 0; i < copyStorePowerSamples.length; i++){
+                    storePowerSamples[i] = copyStorePowerSamples[i];
+                }
+                copyStorePowerSamples.shift(); // Remove the oldest item.
+                storePowerSamples.shift(); // Remove one of the items it doesn't matter the order.
+
             }
 
-            console.log(getPower(getPower().power));
-            console.log('power '+getPower().power);
+
+            //console.log(getPower(getPower().power));
+            //console.log('power '+getPower().power);
             var postData = {
                 power: getPower().power,
                 timestamp: Date.now()
