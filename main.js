@@ -1,8 +1,3 @@
-/*jslint node:true, vars:true, bitwise:true, unparam:true */
-/*jshint unused:true */
-
-
-//Setup express
 var express = require('express');
 var http = require('http');
 var app = express();
@@ -43,7 +38,16 @@ var jsonfile = require('jsonfile');
 //Some of the settings are saved on json file
 var settingsJSON = '/node_app_slot/Settings.json';
 var settingsBackUp = '/node_app_slot/SettingsBackup.json';
+var databaseConfigPath = "/node_app_slot/databaseConfig.json";
 var settingsValues;
+
+//Database config files loading.
+try{
+    var databaseConfig = jsonfile.readFileSync(databaseConfigPath);
+}
+catch(error){
+    console.log("Unale to read database config file." + error);
+}
 
 //Sometimes when writing to the settings file it would go blank. These lines of code will catch an error if that happens and
 //load the original default values for the MainsVoltage (230V) and relayState (true)
@@ -58,6 +62,13 @@ catch(e){
 var MainsVoltage = settingsValues.MainsVoltage;
 //Gets previous relayState value from settings file
 var relayState = settingsValues.relayState;
+
+//Assigns the read values from the config file to variables.
+var databaseHostIp = databaseConfig.databaseIp;
+var databasePort = databaseConfig.port;
+var databaseAuthUrl = databaseConfig.authUrl;
+
+
 //console.log(MainsVoltage);
 console.log(relayState);
 
@@ -80,8 +91,11 @@ var sampleTime = 0.1;
 var samples = 500;
 var sampleInterval = sampleTime/samples;
 
-var treshold = 30;
+var powerTreshold = 25;
+var timeTreshold = 5000; // In miliseconds => 10s
 
+//The time when we start the plug
+var previousEventTime = Date.now();
 //If using edison kit use these
 /*var pwmRed = new mraa.Pwm(3);//red
 var pwmGreen = new mraa.Pwm(5);//green
@@ -99,7 +113,7 @@ pwmBlue.enable(true);//blue
 //LED's start at green
 var stateled='green';
 var pstateled='green';
-
+console.log("#1")
 var redIncrement = 0;
 var greenIncrement = 0;
 var gradient = 0.10;
@@ -118,85 +132,84 @@ led_plug_ON_OFF.write(relayState?1:0);
 var last_state = 0;
 var button = 0;
 
-var storePowerSamples = [-1,-2];
-var storeMedianPower = null;
-var median = require('median');
+var storePowerSamples = [0,0,0,0];    //Default Values to median calc.  -- No Data
+//var copyStorePowerSamples =[0,0]; //Default Values fro Backups calc. -- No Data
+//The median is used to detect an event
+var  storeAveragePowerBegin = null;
+var storeAveragePowerEnd = null;
+
 
 //If a new client connects runs the callback function
 io.sockets.on('connection', function (socket) {
+    console.log("#2")
     //Sends the value of the !relayState to all clients on connect
     io.emit('control_relay', {value: !relayState});
     //Sends the value of the MainsVoltage selected to all clients on connect
     io.emit('updateVoltageOption', MainsVoltage);
 
     //Runs this function every 2 seconds
-    setInterval(function () {   
-        console.log('state '+relayState);
+    setInterval(function () {
+        //console.log('state '+relayState);
+        //console.log(Date.now());
         if (!relayState) {
             //Sends the power and current consumed to the client
             socket.emit( 'power' , JSON.stringify({'power':0,'current':0}));
             stateled='green';
         }else{
             //Sends the power and current consumed to the client
-            socket.emit( 'power' , JSON.stringify(getPower()));
-            storePowerSamples.push(getPower().power);
-            console.log(storePowerSamples);
-            if (storePowerSamples.length >= 3)
-            {
-                if(storeMedianPower == null){
-                    storeMedianPower = median(storePowerSamples);   
-                }else{
-                    if( Math.abs(storeMedianPower - median(storePowerSamples)) >= treshold ){
-                        console.log("An Event was detected");
-                    }else{
-                        console.log("No Event Detected");
-                    }
-                    storeMedianPower = median(storePowerSamples);
-                }
-                //console.log('remove primeiro');
-                console.log(storePowerSamples.shift());
+            var postData = getPower();
+            socket.emit( 'power' , JSON.stringify(postData));
+            storePowerSamples.push(postData.power);
 
-                //console.log('depois de remover')
+            if (storePowerSamples.length >= 5)
+            {
+                //Calculates the average when the average when the buffer is full
+                storeAveragePowerBegin = (storePowerSamples[0] + storePowerSamples[1])/2;
+                storeAveragePowerEnd = (storePowerSamples[3] + storePowerSamples[4])/2;
+                var averageDiference = storeAveragePowerBegin - storeAveragePowerEnd; // Module difference between the averages
                 //console.log(storePowerSamples);
+
+                //console.log("The diffrence is: " + (Date.now() - previousEventTime) );
+                if(Date.now() - previousEventTime >=  timeTreshold){ //Block Event Detection
+                    if( Math.abs(averageDiference) >= powerTreshold){ //And event happaned.
+
+                        //Detects the triggers Up or Down
+                        if(averageDiference < 0){
+                                //console.log(" ### Turned a new device on ###");
+                                stateValue = "ON";
+                                previousEventTime = Date.now();
+                        }
+                        else if(averageDiference >= 0){
+                                //console.log(" ### Turned a device off ###");
+                                stateValue = "OFF";
+                                previousEventTime = Date.now();
+                        }
+                            var postEventData = {
+                                type: stateValue,
+                                timestamp: Date.now()
+                            };
+                            sendEvents(postEventData);
+                    }else{
+                        //console.log("No Event Detected");   //No event Detection
+                    }
+
+               }
+                  storePowerSamples.shift();      // Remove one of the items it doesn't matter the order.
             }
 
-            console.log(getPower(getPower().power));
-            console.log('power '+getPower().power);
-            var postData = {
-                power: getPower().power,
-                timestamp: Date.now()
-            };
+            sendMeasuredPoints(postData);
 
-            var options = {
-                auth: 'miti_plugs-bd8bf7a544cac5b65cd74f11cbeff8827b23e920bb98218:ffc16a0f2d1f35e4537a91d9651320c5b1c7783f36f39a13',
-                host: '192.168.10.171',
-                port: '3000',
-                path: '/api/json/plugs',
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                }
-            };
-            var post_req = http.request(options, function(res) {
-                res.setEncoding('utf8');
-            });
-            post_req.on('error', function(err) {
-                //console.log("Cannot connecto to server.");
-                //console.log(err);
-            })
-            post_req.write(JSON.stringify(postData));
-            post_req.end();
 
-            //Updates the value of the !relayState on all clients 
+            //Updates the value of the !relayState on all clients
             io.emit('control_relay', {value: !relayState});
-            //Updates the value of the MainsVoltage selected on all clients 
+            //Updates the value of the MainsVoltage selected on all clients
             io.emit('updateVoltageOption', MainsVoltage);
 
             //jsonfile.writeFileSync(settingsJSON, {"MainsVoltage":MainsVoltage, "relayState":relayState});
         }
-    }, 2000);  
-    
-    //Listens for a msg sent from client with keyword 'control_relay'.  
+    }, 1000);
+
+    //Listens for a msg sent from client with keyword 'control_relay'.
     //This is called when the 'Turn on plug/Turn off plug' button is pressed
     socket.on('control_relay', function(msg) {
         msg.value = relayState;
@@ -208,7 +221,7 @@ io.sockets.on('connection', function (socket) {
         //Turns LED on/off
         led_plug_ON_OFF.write(relayState?1:0);
         //Updates settings file with new relayState value
-        jsonfile.writeFileSync(settingsJSON, {"MainsVoltage":MainsVoltage, "relayState":relayState});
+        jsonfile.writeFileSync(settingsJSON, {"MainsVoltage":MainsVoltage, "relayState":relayState, "database_ip":databaseHostIp});
     });
 
     //Listens for a msg sent from client with keyword 'voltageOption'.
@@ -218,7 +231,7 @@ io.sockets.on('connection', function (socket) {
         //Updates the value of the MainsVoltage selected on all clients
         io.emit('updateVoltageOption', MainsVoltage);
         //Updates settings file with new MainsVoltage value
-        jsonfile.writeFileSync(settingsJSON, {"MainsVoltage":MainsVoltage, "relayState":relayState});
+        jsonfile.writeFileSync(settingsJSON, {"MainsVoltage":MainsVoltage, "relayState":relayState, "database_ip":databaseHostIp});
     });
 
     //Listens for a msg sent from client with keyword 'calibrate'.
@@ -229,6 +242,55 @@ io.sockets.on('connection', function (socket) {
         socket.emit('calibration_response');
     });
 });
+
+//Send On and Off events when a device is plugged and the signal changes
+function sendEvents(postData){
+    var options = {
+    auth: databaseAuthUrl,
+    host: databaseHostIp,
+    port: databasePort,
+    path: '/api/json/plugs_events',
+    method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        }
+    };
+    var post_req = http.request(options, function(res) {
+        res.setEncoding('utf8');
+    });
+    post_req.on('error', function(err) {
+        console.log("Cannot connect to server.");
+        //console.log(err);
+    });
+
+    post_req.write(JSON.stringify(postData));
+    post_req.end();
+    //console.log("Sending Event Values");
+
+}
+//Send the data to the server (Measured Points)
+function sendMeasuredPoints(postData){
+    var options = {
+        auth: databaseAuthUrl,
+        host: databaseHostIp,
+        port: databasePort,
+        path: '/api/json/continuous_measuring',
+        method: 'POST',
+        headers: {
+                'Content-Type': 'application/json'
+            }
+    };
+    var post_req = http.request(options, function(res) {
+        res.setEncoding('utf8');
+    });
+    post_req.on('error', function(err) {
+        console.log("Cannot connect to server.");
+        //console.log(err);
+    })
+    post_req.write(JSON.stringify(postData));
+    post_req.end();
+    //console.log("Sending Values");
+}
 
 //This function is called every 100 ms to change the LED's colours
 //It can fade from green to red or vice versa
@@ -294,7 +356,7 @@ setInterval(function () {
     if (stateled==='green'){
      if (pstateled==='green'){
                 pwmRed.write(0.0000);
-                pwmGreen.write(1.0000);
+               // pwmGreen.write(1.0000);
               //  pwmBlue.write(0.000);
                 redIncrement=0.0000;
                 greenIncrement=1.0000;
@@ -344,7 +406,7 @@ function getPower() {
     var readValue = 0;
     var countSamples = 0;
 
-    var startTime = Date.now()-sampleInterval; 
+    var startTime = Date.now()-sampleInterval;
     var storeSamples = [];
     //console.log('Date before while: ' + Date.now());
 
@@ -354,8 +416,8 @@ function getPower() {
         //Centers read value at zero
         readValue = a0_4v.adcRead() - adcZero;
         storeSamples.push(readValue);
-        //Squares all values and sums them  
-        result += (readValue * readValue);       
+        //Squares all values and sums them
+        result += (readValue * readValue);
         countSamples++;
         startTime += sampleInterval;
       }
@@ -406,7 +468,7 @@ function getPower() {
          Power = 2000;
     }
 
-   return {'power':Power, 'current':AmpRMS.toFixed(2)};
+   return {'power':Power, 'current':AmpRMS.toFixed(2), timestamp: Date.now()};
 }
 
 //This function calculates an average of the current to get the zero value.
